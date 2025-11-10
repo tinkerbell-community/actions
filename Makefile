@@ -28,7 +28,7 @@ help: ## Print this help
 
 .PHONY: $(ACTIONS)
 $(ACTIONS): ## Build a specific action image.
-	docker buildx build --platform linux/amd64,linux/arm64 --load -t  $@:latest -f ./$@/Dockerfile .
+	docker buildx build --platform linux/arm64 --load -t  $@:latest -f ./$@/Dockerfile .
 
 .PHONY: images
 images: ## Build all action images.

@@ -46,6 +46,7 @@ jobs:
         action:
           - archive2disk
           - cexec
+          - cidataio
           - grub2disk
           - image2disk
           - kexec

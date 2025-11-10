@@ -10,6 +10,13 @@ import (
 	"time"
 )
 
+const (
+	configISOLabel          = "cidata"
+	configNetworkConfigPath = "network-config"
+	configMetaDataPath      = "meta-data"
+	configUserDataPath      = "user-data"
+)
+
 // run is a helper to run a shell command and log it.
 func run(cmdStr string, args ...string) {
 	log.Printf("Running: %s %s", cmdStr, strings.Join(args, " "))
@@ -77,8 +84,10 @@ func main() {
 	run("partprobe", disk)
 	time.Sleep(1 * time.Second) // Give udev time to create devices
 
-	// Must use "sh -c" to expand the glob patterns correctly
-	globPattern := fmt.Sprintf("ls -1 %sp* %s*p 2>/dev/null || true", disk, disk)
+	// List all partitions for this disk using regex to match both:
+	// - Standard devices: /dev/sda1, /dev/sdb2, /dev/vda3
+	// - NVMe/MMC devices: /dev/nvme0n1p1, /dev/mmcblk0p2
+	globPattern := fmt.Sprintf("ls -1 %s* 2>/dev/null | grep -E '%sp?[0-9]+$' || true", disk, disk)
 	partsBefore := runWithOutput("sh", "-c", globPattern)
 
 	// 3. Create the new partition
@@ -98,7 +107,7 @@ func main() {
 
 	// 5. Format the new partition
 	log.Printf("Formatting %s as vfat with label cidata", newPart)
-	run("mkfs.vfat", "-n", "cidata", newPart)
+	run("mkfs.vfat", "-n", configISOLabel, newPart)
 
 	// 6. Mount, Write, Unmount
 	mountPoint := "/mnt/cidata"
@@ -107,9 +116,9 @@ func main() {
 	run("mount", newPart, mountPoint)
 
 	// 7. Write data from Env Vars
-	writeFileIfEnv("USER_DATA", filepath.Join(mountPoint, "user-data"))
-	writeFileIfEnv("META_DATA", filepath.Join(mountPoint, "meta-data"))
-	writeFileIfEnv("VENDOR_DATA", filepath.Join(mountPoint, "vendor-data"))
+	writeFileIfEnv("USER_DATA", filepath.Join(mountPoint, configUserDataPath))
+	writeFileIfEnv("META_DATA", filepath.Join(mountPoint, configMetaDataPath))
+	writeFileIfEnv("NETWORK_CONFIG", filepath.Join(mountPoint, configNetworkConfigPath))
 
 	// 8. Unmount
 	log.Printf("Unmounting %s", mountPoint)
