@@ -19,7 +19,7 @@ It performs the following steps:
 * **`DEST_DISK`** (Required): The block device to operate on (e.g., `/dev/sda`, `/dev/nvme0n1`).
 * **`USER_DATA`** (Optional): The content for the `user-data` file.
 * **`META_DATA`** (Optional): The content for the `meta-data` file.
-* **`VENDOR_DATA`** (Optional): The content for the `vendor-data` file.
+* **`NETWORK_CONFIG`** (Optional): The content for the `network-config` file.
 
 ## Example Workflow YAML
 
