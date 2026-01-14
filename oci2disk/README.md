@@ -28,17 +28,9 @@ actions:
     environment:
       DEST_DISK: /dev/nvme0n1
       IMG_URL: "192.168.0.173/test/debian:raw.gz"
-      COMPRESSED: true
-      # optional fields for registry authentication
-      REGISTRY_USERNAME: "foo"
-      REGISTRY_PASSWORD: "bar"
-      # optional field to skip TLS verification (defaults to false)
-      SKIP_VERIFY: "true"
 ```
 
-## Compression format supported:
+## Environment Variables:
 
-- bzip2 (`.bzip2`)
-- gzip (`.gz`)
-- xz (`.xz`)
-- xs (`.xs`)
+- `DEST_DISK`: Target block device to write the image to (required)
+- `IMG_URL`: OCI image reference (required)
