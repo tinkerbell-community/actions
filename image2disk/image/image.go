@@ -1,3 +1,5 @@
+//go:build linux
+
 package image
 
 // This package handles the pulling and management of images
