@@ -45,6 +45,27 @@ The action is idempotent: a UKI whose command line already contains the
 requested arguments is left untouched. Each UKI is rewritten to a temporary
 file next to it and renamed over the original.
 
+## Where the arguments live
+
+Checked against the Image Factory image
+`factory.talos.dev/image/<schematic>/v1.13.10/metal-amd64.raw.zst` and the
+upstream `v1.14.0` metal image:
+
+| Item | Location |
+| --- | --- |
+| Partition | GPT partition 1, name `EFI`, EFI System type, starts at sector 2048 (byte 1048576), about 2 GiB, FAT32. Device `/dev/sda1` or `/dev/nvme0n1p1`. |
+| Bootloader | `EFI/boot/BOOTX64.efi` (systemd-boot), menu config `loader/loader.conf`. |
+| UKI | `EFI/Linux/Talos-<version>.efi`, about 107 MB, unsigned for non Secure Boot images. |
+| Default boot command line | PE section `.cmdline` (section 7), file offset `0x18e00` in the v1.13.10 UKI, 512-byte raw section, 195 bytes used. |
+| Reset profile command line | Second `.cmdline` (section 14) after the two `.profile` sections, file offset `0x6694e00`, 242 bytes used. |
+
+The factory `metal-amd64.raw.zst` image is systemd-boot only; it has no
+`BIOS` or GRUB `BOOT` partition. The upstream metal image is dual-boot and
+additionally carries those, which only matter for legacy BIOS boots.
+
+The action logs the section index, offset and size of every command line it
+finds, so the exact location on a given disk is always in the action output.
+
 ## What is rewritten
 
 Talos assembles a UKI by appending data sections (`.osrel`, `.cmdline`,

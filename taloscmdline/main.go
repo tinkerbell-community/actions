@@ -124,6 +124,10 @@ func editUKIs(root, pattern, args string, strip bool, logger *slog.Logger) (upda
 			}
 		}
 
+		for i, loc := range info.Locations {
+			logger.Info("Found kernel command line", "uki", rel, "cmdline", i, "section", loc.Section, "offset", fmt.Sprintf("%#x", loc.Offset), "bytes", loc.Size)
+		}
+
 		if !changed {
 			logger.Info("UKI already has the requested arguments", "uki", rel, "cmdline", info.Cmdlines[0])
 			unchanged++

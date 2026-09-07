@@ -34,7 +34,20 @@ type Info struct {
 	// Cmdlines holds every .cmdline section in file order: the default boot
 	// first, then one per boot profile that overrides it.
 	Cmdlines []string
-	Signed   bool
+	// Locations describes where each entry of Cmdlines is stored, in the
+	// same order.
+	Locations []Location
+	Signed    bool
+}
+
+// Location is where a .cmdline section lives inside the UKI file.
+type Location struct {
+	// Section is the index in the PE section table.
+	Section int
+	// Offset is the byte offset of the section data in the file.
+	Offset int64
+	// Size is the length of the command line in bytes.
+	Size int64
 }
 
 // Options control Rewrite.
@@ -206,6 +219,11 @@ func Inspect(path string) (Info, error) {
 		}
 
 		info.Cmdlines = append(info.Cmdlines, cmdline)
+		info.Locations = append(info.Locations, Location{
+			Section: i,
+			Offset:  int64(l.sections[i].Offset),
+			Size:    int64(l.sections[i].VirtualSize),
+		})
 	}
 
 	return info, nil

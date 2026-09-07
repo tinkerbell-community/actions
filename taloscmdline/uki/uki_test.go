@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -333,5 +334,27 @@ func assertNoTempFiles(t *testing.T, dir string) {
 		if !strings.HasSuffix(e.Name(), ".efi") {
 			t.Fatalf("unexpected file left behind: %s", e.Name())
 		}
+	}
+}
+
+func TestInspectReportsCmdlineLocations(t *testing.T) {
+	path := build(t, ukitest.TalosLike("a=1"), ukitest.Options{})
+
+	info, err := Inspect(path)
+	if err != nil {
+		t.Fatalf("Inspect() error: %v", err)
+	}
+
+	f := openPE(t, path)
+
+	var want []Location
+	for i, s := range f.Sections {
+		if s.Name == SectionName {
+			want = append(want, Location{Section: i, Offset: int64(s.Offset), Size: int64(s.VirtualSize)})
+		}
+	}
+
+	if len(want) != 2 || !reflect.DeepEqual(info.Locations, want) {
+		t.Fatalf("Locations = %+v, want %+v", info.Locations, want)
 	}
 }
