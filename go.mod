@@ -1,6 +1,6 @@
 module github.com/tinkerbell/actions
 
-go 1.25.0
+go 1.26.3
 
 require (
 	github.com/cenkalti/backoff v2.2.1+incompatible
@@ -27,7 +27,10 @@ require (
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.26 // indirect
 	github.com/pkg/xattr v0.4.12 // indirect
+	github.com/siderolabs/gen v0.8.6 // indirect
+	github.com/siderolabs/go-adv v1.0.0 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
+	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 )

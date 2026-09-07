@@ -23,6 +23,8 @@ jobs:
           - rootio
           - slurp
           - syslinux
+          - talosmeta
+          - ubootenv
           - writefile
     permissions:
       contents: read

@@ -55,6 +55,8 @@ jobs:
           - rootio
           - slurp
           - syslinux
+          - talosmeta
+          - ubootenv
           - writefile
     steps:
       - uses: actions/checkout@v7
