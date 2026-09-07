@@ -36,12 +36,33 @@ actions:
 | Variable | Required | Default | Description |
 | --- | --- | --- | --- |
 | `DEST_DISK` | yes | | Block device holding the Talos image, for example `/dev/sda`. The partition named `META` is located through the GPT, so partition device nodes are not needed. |
-| `MIRROR_HOST` | unless `NETWORK_CONFIG` is set | | Host of the Tinkerbell metadata service. |
+| `MIRROR_HOST` | unless `NETWORK_CONFIG` or `HARDWARE_SPEC` is set | | Host of the Tinkerbell metadata service. |
 | `METADATA_SERVICE_PORT` | no | `7080` | Port of the consolidated Tinkerbell HTTP server that serves `/metadata`. |
-| `NETWORK_CONFIG` | no | | A complete Talos network configuration document. When set the metadata service is not consulted and the YAML is written verbatim, exactly like `talosctl meta write 0xa`. |
+| `HARDWARE_SPEC` | no | | The Hardware `spec` (or just its `interfaces` and `metadata.instance`) as JSON. Takes precedence over the metadata service; a Workflow template can render it from `.hardware.spec`, see below. |
+| `NETWORK_CONFIG` | no | | A complete Talos network configuration document. When set nothing else is consulted and the YAML is written verbatim, exactly like `talosctl meta write 0xa`. |
 | `LINK_NAMING` | no | `predictable` | How interface names are derived when the Hardware does not set `iface_name`; see below. |
 
 Re-running the action replaces key `0xa` and leaves every other META key intact.
+
+## Passing Hardware data from the Workflow template
+
+Tinkerbell exposes the Hardware object to Workflow templates as `.hardware`,
+so the template can hand the relevant part of the spec straight to the action
+without any metadata service round trip:
+
+```yaml
+- name: "write-talos-network-config"
+  image: quay.io/tinkerbell/actions/talosmeta:latest
+  timeout: 120
+  environment:
+    DEST_DISK: /dev/sda
+    HARDWARE_SPEC: {{ dict "interfaces" (dig "interfaces" (list) .hardware.spec) "metadata" (dict "instance" (dict "hostname" (dig "metadata" "instance" "hostname" "" .hardware.spec) "ips" (dig "metadata" "instance" "ips" (list) .hardware.spec))) | toJson | quote }}
+```
+
+`dig` keeps the render working when a field is absent, and `quote` produces
+a YAML double-quoted scalar. Only `interfaces` and `metadata.instance` are
+needed, so the machine configuration in `spec.userData` never leaves the
+Hardware object.
 
 ## Mapping
 

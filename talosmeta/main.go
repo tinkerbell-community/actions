@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -63,9 +64,10 @@ func run(logger *slog.Logger) error {
 	return nil
 }
 
-// networkDocument returns the YAML to store under META key 0xa, either the
-// operator-supplied NETWORK_CONFIG or a document derived from the Hardware
-// data served by the Tinkerbell metadata service.
+// networkDocument returns the YAML to store under META key 0xa. In order of
+// precedence: the operator-supplied NETWORK_CONFIG document, a Hardware spec
+// passed in HARDWARE_SPEC (JSON, as a Workflow template can render it), or the
+// Hardware data served by the Tinkerbell metadata service.
 func networkDocument(ctx context.Context, logger *slog.Logger) ([]byte, error) {
 	if raw := os.Getenv("NETWORK_CONFIG"); raw != "" {
 		if _, err := talosnet.Parse([]byte(raw)); err != nil {
@@ -77,31 +79,18 @@ func networkDocument(ctx context.Context, logger *slog.Logger) ([]byte, error) {
 		return []byte(raw), nil
 	}
 
-	host := os.Getenv("MIRROR_HOST")
-	if host == "" {
-		return nil, errors.New("unable to discover the metadata server: set environment variable [MIRROR_HOST] or provide [NETWORK_CONFIG]")
-	}
-
-	port, ok := os.LookupEnv("METADATA_SERVICE_PORT")
-	if !ok {
-		port = defaultMetadataPort
-	}
-
 	namer, err := newNamer(logger)
 	if err != nil {
 		return nil, err
 	}
 
-	baseURL := "http://" + net.JoinHostPort(host, port)
-	logger.Info("Retrieving hardware data", "url", baseURL+"/metadata")
-
-	spec, err := hardware.Fetch(ctx, &http.Client{Timeout: metadataTimeout}, baseURL)
+	spec, source, err := hardwareSpec(ctx, logger)
 	if err != nil {
 		return nil, err
 	}
 
 	if len(spec.Interfaces) == 0 {
-		return nil, fmt.Errorf("hardware data from %s has no interfaces; the metadata service must expose the Hardware spec.interfaces on /metadata, or pass the document through NETWORK_CONFIG", baseURL)
+		return nil, fmt.Errorf("hardware data from %s has no interfaces; pass the Hardware spec.interfaces through HARDWARE_SPEC, expose them on /metadata, or provide NETWORK_CONFIG", source)
 	}
 
 	cfg, err := talosnet.FromHardware(spec, namer)
@@ -110,6 +99,41 @@ func networkDocument(ctx context.Context, logger *slog.Logger) ([]byte, error) {
 	}
 
 	return cfg.Marshal()
+}
+
+// hardwareSpec loads the Hardware spec from HARDWARE_SPEC or the metadata
+// service, returning it with a description of where it came from.
+func hardwareSpec(ctx context.Context, logger *slog.Logger) (*hardware.Spec, string, error) {
+	if raw := os.Getenv("HARDWARE_SPEC"); raw != "" {
+		var spec hardware.Spec
+		if err := json.Unmarshal([]byte(raw), &spec); err != nil {
+			return nil, "", fmt.Errorf("HARDWARE_SPEC is not valid Hardware spec JSON: %w", err)
+		}
+
+		logger.Info("Using hardware data from HARDWARE_SPEC", "interfaces", len(spec.Interfaces))
+
+		return &spec, "HARDWARE_SPEC", nil
+	}
+
+	host := os.Getenv("MIRROR_HOST")
+	if host == "" {
+		return nil, "", errors.New("no hardware data source: set [MIRROR_HOST] for the metadata service, or provide [HARDWARE_SPEC] or [NETWORK_CONFIG]")
+	}
+
+	port, ok := os.LookupEnv("METADATA_SERVICE_PORT")
+	if !ok {
+		port = defaultMetadataPort
+	}
+
+	baseURL := "http://" + net.JoinHostPort(host, port)
+	logger.Info("Retrieving hardware data", "url", baseURL+"/metadata")
+
+	spec, err := hardware.Fetch(ctx, &http.Client{Timeout: metadataTimeout}, baseURL)
+	if err != nil {
+		return nil, "", err
+	}
+
+	return spec, baseURL, nil
 }
 
 func newNamer(logger *slog.Logger) (*talosnet.SysfsNamer, error) {
