@@ -23,6 +23,7 @@ jobs:
           - rootio
           - slurp
           - syslinux
+          - taloscmdline
           - talosmeta
           - ubootenv
           - writefile

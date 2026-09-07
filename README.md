@@ -15,6 +15,7 @@ This repository is a suite of reusable Tinkerbell Actions that are used to compo
 | [rootio](/rootio/)                | Manage disks (partition, format etc)
 | [slurp](/slurp/)                  | Stream a block device to a remote server |
 | [syslinux](/syslinux/)            | Install the syslinux bootloader to a block device |
+| [taloscmdline](/taloscmdline/)    | Set kernel arguments in Talos Linux unified kernel images |
 | [talosmeta](/talosmeta/)          | Write Talos Linux network configuration to the META partition |
 | [ubootenv](/ubootenv/)            | Update U-Boot environment variables on a block device |
 | [writefile](/writefile/)          | Write a file to a file system on a block device |

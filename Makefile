@@ -9,7 +9,7 @@ SHELL       := bash
 .SECONDEXPANSION:
 
 # Define the list of actions that can be built.
-ACTIONS := archive2disk cexec cidataio grub2disk image2disk kexec oci2disk qemuimg2disk rootio slurp syslinux talosmeta ubootenv writefile
+ACTIONS := archive2disk cexec cidataio grub2disk image2disk kexec oci2disk qemuimg2disk rootio slurp syslinux taloscmdline talosmeta ubootenv writefile
 
 # Platform for locally built images; defaults to the host architecture.
 BUILD_PLATFORM ?= linux/$(shell go env GOARCH)
