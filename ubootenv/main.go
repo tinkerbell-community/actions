@@ -4,6 +4,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -19,14 +20,20 @@ func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	logger.Info("UBOOTENV - U-Boot Environment Variable Writer")
 
+	if err := run(logger); err != nil {
+		logger.Error(err.Error())
+		os.Exit(1)
+	}
+}
+
+func run(logger *slog.Logger) error {
 	blockDevice := os.Getenv("DEST_DISK")
 	fsType := os.Getenv("FS_TYPE")
 	envPath := os.Getenv("ENV_FILE")
 	envVarsJSON := os.Getenv("ENV_VARS")
 
 	if blockDevice == "" {
-		logger.Error("DEST_DISK is required")
-		os.Exit(1)
+		return errors.New("DEST_DISK is required")
 	}
 
 	if fsType == "" {
@@ -38,29 +45,25 @@ func main() {
 	}
 
 	if envVarsJSON == "" {
-		logger.Error("ENV_VARS is required (JSON object of key/value pairs)")
-		os.Exit(1)
+		return errors.New("ENV_VARS is required (JSON object of key/value pairs)")
 	}
 
 	var newVars map[string]string
 	if err := json.Unmarshal([]byte(envVarsJSON), &newVars); err != nil {
-		logger.Error("Failed to parse ENV_VARS as JSON", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("failed to parse ENV_VARS as JSON: %w", err)
 	}
 
 	if len(newVars) == 0 {
 		logger.Info("No environment variables to set, nothing to do")
-		return
+		return nil
 	}
 
 	if err := os.MkdirAll(mountAction, 0o755); err != nil {
-		logger.Error("Error creating mountpoint", "path", mountAction, "error", err)
-		os.Exit(1)
+		return fmt.Errorf("error creating mountpoint %s: %w", mountAction, err)
 	}
 
 	if err := syscall.Mount(blockDevice, mountAction, fsType, 0, ""); err != nil {
-		logger.Error("Failed to mount block device", "device", blockDevice, "mountpoint", mountAction, "fstype", fsType, "error", err)
-		os.Exit(1)
+		return fmt.Errorf("failed to mount block device %s on %s as %s: %w", blockDevice, mountAction, fsType, err)
 	}
 	defer func() {
 		if err := syscall.Unmount(mountAction, 0); err != nil {
@@ -75,14 +78,12 @@ func main() {
 
 	data, err := os.ReadFile(fullPath)
 	if err != nil {
-		logger.Error("Failed to read U-Boot environment file", "path", fullPath, "error", err)
-		os.Exit(1)
+		return fmt.Errorf("failed to read U-Boot environment file %s: %w", fullPath, err)
 	}
 
 	env, err := ubootenv.Parse(data)
 	if err != nil {
-		logger.Error("Failed to parse U-Boot environment", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("failed to parse U-Boot environment: %w", err)
 	}
 
 	logger.Info(fmt.Sprintf("Parsed U-Boot environment: %d existing variables", len(env.Vars)))
@@ -99,14 +100,14 @@ func main() {
 
 	out, err := env.Marshal()
 	if err != nil {
-		logger.Error("Failed to marshal U-Boot environment", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("failed to marshal U-Boot environment: %w", err)
 	}
 
-	if err := os.WriteFile(fullPath, out, 0o644); err != nil {
-		logger.Error("Failed to write U-Boot environment file", "path", fullPath, "error", err)
-		os.Exit(1)
+	if err := os.WriteFile(fullPath, out, 0o644); err != nil { //nolint:gosec // G306: the boot firmware reads this file.
+		return fmt.Errorf("failed to write U-Boot environment file %s: %w", fullPath, err)
 	}
 
 	logger.Info("U-Boot environment updated successfully", "path", envPath, "variables_set", len(newVars))
+
+	return nil
 }

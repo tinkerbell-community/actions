@@ -19,7 +19,7 @@ const (
 
 // run is a helper to run a shell command and log it.
 func run(cmdStr string, args ...string) {
-	log.Printf("Running: %s %s", cmdStr, strings.Join(args, " "))
+	log.Printf("Running: %s %s", cmdStr, strings.Join(args, " ")) //nolint:gosec // G706: values come from the action environment supplied by the operator.
 	cmd := exec.Command(cmdStr, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -30,10 +30,10 @@ func run(cmdStr string, args ...string) {
 
 // runWithOutput runs a command and returns its stdout.
 func runWithOutput(cmdStr string, args ...string) string {
-	log.Printf("Running (for output): %s %s", cmdStr, strings.Join(args, " "))
+	log.Printf("Running (for output): %s %s", cmdStr, strings.Join(args, " ")) //nolint:gosec // G706: values come from the action environment supplied by the operator.
 	out, err := exec.Command(cmdStr, args...).CombinedOutput()
 	if err != nil {
-		log.Printf("Command failed: %s - %v", string(out), err)
+		log.Printf("Command failed: %s - %v", string(out), err) //nolint:gosec // G706: values come from the action environment supplied by the operator.
 		// Don't fatalf, as some commands (like ls) might fail gracefully
 	}
 	return strings.TrimSpace(string(out))
@@ -65,7 +65,7 @@ func writeFileIfEnv(envVar, path string) {
 	}
 
 	log.Printf("Writing content from %s to %s", envVar, path)
-	err := os.WriteFile(path, []byte(content), 0644)
+	err := os.WriteFile(path, []byte(content), 0o644) //nolint:gosec // G306: cloud-init reads these files from the cidata volume.
 	if err != nil {
 		log.Fatalf("Failed to write file %s: %v", path, err)
 	}
@@ -91,7 +91,7 @@ func main() {
 	partsBefore := runWithOutput("sh", "-c", globPattern)
 
 	// 3. Create the new partition
-	log.Printf("Creating new partition on %s", disk)
+	log.Printf("Creating new partition on %s", disk) //nolint:gosec // G706: values come from the action environment supplied by the operator.
 	run("sgdisk", "-n", "0:0:+2M", "-t", "0:0700", disk)
 
 	// 4. Force kernel to re-read and find the new partition
@@ -101,7 +101,7 @@ func main() {
 
 	newPart := findNewPartition(partsBefore, partsAfter)
 	if newPart == "" {
-		log.Fatalf("Could not find a new partition. Before: [%s], After: [%s]", partsBefore, partsAfter)
+		log.Fatalf("Could not find a new partition. Before: [%s], After: [%s]", partsBefore, partsAfter) //nolint:gosec // G706: values come from the action environment supplied by the operator.
 	}
 	log.Printf("Found new partition: %s", newPart)
 

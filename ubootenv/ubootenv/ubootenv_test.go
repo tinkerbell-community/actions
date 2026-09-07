@@ -6,8 +6,8 @@ import (
 	"testing"
 )
 
-func makeEnv(size int, vars map[string]string) []byte {
-	buf := make([]byte, size)
+func makeEnv(vars map[string]string) []byte {
+	buf := make([]byte, DefaultEnvSize)
 	pos := crcSize
 	for k, v := range vars {
 		entry := k + "=" + v
@@ -27,7 +27,7 @@ func TestParseAndMarshalRoundTrip(t *testing.T) {
 		"bootdelay": "3",
 		"ethaddr":   "00:11:22:33:44:55",
 	}
-	data := makeEnv(DefaultEnvSize, original)
+	data := makeEnv(original)
 	env, err := Parse(data)
 	if err != nil {
 		t.Fatalf("Parse() error: %v", err)
@@ -65,7 +65,7 @@ func TestParseAndMarshalRoundTrip(t *testing.T) {
 }
 
 func TestParseInvalidCRC(t *testing.T) {
-	data := makeEnv(DefaultEnvSize, map[string]string{"foo": "bar"})
+	data := makeEnv(map[string]string{"foo": "bar"})
 	data[0] ^= 0xFF
 	_, err := Parse(data)
 	if err == nil {
@@ -81,7 +81,7 @@ func TestParseTooShort(t *testing.T) {
 }
 
 func TestParseEmptyEnvironment(t *testing.T) {
-	data := makeEnv(DefaultEnvSize, map[string]string{})
+	data := makeEnv(map[string]string{})
 	env, err := Parse(data)
 	if err != nil {
 		t.Fatalf("Parse() error: %v", err)
@@ -97,7 +97,7 @@ func TestSetAndDeleteVars(t *testing.T) {
 		"bootdelay": "5",
 		"toremove":  "gone",
 	}
-	data := makeEnv(DefaultEnvSize, original)
+	data := makeEnv(original)
 	env, err := Parse(data)
 	if err != nil {
 		t.Fatalf("Parse() error: %v", err)

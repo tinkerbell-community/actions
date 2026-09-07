@@ -27,9 +27,6 @@ import (
 	"oras.land/oras-go/v2/registry/remote/auth"
 )
 
-// BLKRRPART is the ioctl request to re-read partition table (Linux-specific)
-const BLKRRPART = 0x125f
-
 type Progress struct {
 	w      io.Writer
 	r      io.Reader
@@ -202,7 +199,7 @@ func Write(sourceImage, destinationDevice string) error {
 		// Stop progress reporting
 		ticker.Stop()
 		done <- true
-		
+
 		// Close in correct order: decompressor first (if exists), then underlying layerReader
 		if decompressor != nil {
 			decompressor.Close()
@@ -228,7 +225,7 @@ func Write(sourceImage, destinationDevice string) error {
 		log.Warnf("Failed to sync the block device")
 	}
 
-	if err := unix.IoctlSetInt(int(fileOut.Fd()), BLKRRPART, 0); err != nil {
+	if err := unix.IoctlSetInt(int(fileOut.Fd()), unix.BLKRRPART, 0); err != nil {
 		log.Warnf("Error re-probing the partitions for the specified device")
 	}
 
