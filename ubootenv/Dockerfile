@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM golang:1.24-alpine AS ubootenv
+FROM golang:1.26-alpine AS ubootenv
 RUN apk add --no-cache git ca-certificates gcc musl-dev
 COPY . /src
 WORKDIR /src/ubootenv

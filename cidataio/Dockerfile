@@ -1,4 +1,4 @@
-FROM golang:1.24-alpine AS cidataio
+FROM golang:1.26-alpine AS cidataio
 RUN apk add --no-cache git ca-certificates gcc linux-headers musl-dev
 COPY . /src
 WORKDIR /src/cidataio
