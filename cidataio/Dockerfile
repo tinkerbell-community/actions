@@ -1,12 +1,13 @@
 FROM golang:1.26-alpine AS cidataio
-RUN apk add --no-cache git ca-certificates gcc linux-headers musl-dev
 COPY . /src
 WORKDIR /src/cidataio
 RUN --mount=type=cache,sharing=locked,id=gomod,target=/go/pkg/mod/cache \
     --mount=type=cache,sharing=locked,id=goroot,target=/root/.cache/go-build \
-    CGO_ENABLED=1 GOOS=linux go build -a -ldflags "-linkmode external -extldflags '-static' -s -w" -o cidataio
+    CGO_ENABLED=0 GOOS=linux go build -ldflags "-s -w" -o cidataio
 
-FROM alpine:latest
+# cidataio shells out to sgdisk, partprobe, mkfs.vfat and mount, so it needs a
+# real userland rather than scratch.
+FROM alpine:3.22
 RUN apk add --no-cache sgdisk dosfstools util-linux
 COPY --from=cidataio /src/cidataio/cidataio /usr/bin/cidataio
 ENTRYPOINT ["/usr/bin/cidataio"]
