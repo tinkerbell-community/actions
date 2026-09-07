@@ -24,7 +24,6 @@ import (
 	"oras.land/oras-go/v2"
 	"oras.land/oras-go/v2/content"
 	"oras.land/oras-go/v2/registry/remote"
-	"oras.land/oras-go/v2/registry/remote/auth"
 )
 
 type Progress struct {
@@ -69,10 +68,12 @@ func prettyByteSize(b int64) string {
 	return fmt.Sprintf("%.6fYiB", bf)
 }
 
-// Write will pull an image and write it to local storage device
+// Write will pull an image and write it to local storage device.
 // Compression type is automatically detected from the layer's org.opencontainers.image.title annotation.
 // Platform is automatically detected from the runtime (linux/arm64, linux/amd64, etc.).
-func Write(sourceImage, destinationDevice string) error {
+// Registry credentials are optional; when empty the pull is anonymous. skipVerify disables TLS
+// certificate verification for registries with self-signed certificates.
+func Write(sourceImage, destinationDevice, registryUsername, registryPassword string, skipVerify bool) error {
 	ctx := context.Background()
 
 	// Detect platform from runtime
@@ -85,8 +86,15 @@ func Write(sourceImage, destinationDevice string) error {
 		return fmt.Errorf("failed to create repository: %w", err)
 	}
 
-	// Configure repository client with custom HTTP client
-	repo.Client = auth.DefaultClient
+	if registryUsername != "" && registryPassword != "" {
+		log.Infof("Registry credentials provided, using authenticated pull")
+	}
+
+	if skipVerify {
+		log.Warnf("TLS certificate verification disabled for registry [%s]", repo.Reference.Registry)
+	}
+
+	repo.Client = newRegistryClient(repo.Reference.Registry, registryUsername, registryPassword, skipVerify)
 
 	// Open destination device
 	fileOut, err := os.OpenFile(destinationDevice, os.O_CREATE|os.O_WRONLY, 0o644)
