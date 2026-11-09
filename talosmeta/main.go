@@ -1,15 +1,12 @@
 package main
 
 import (
-	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
-	"net/http"
 	"os"
-	"time"
+	"strconv"
+	"strings"
 
 	"github.com/tinkerbell/actions/talosmeta/hardware"
 	"github.com/tinkerbell/actions/talosmeta/meta"
@@ -17,14 +14,12 @@ import (
 )
 
 const (
-	// defaultMetadataPort is the consolidated Tinkerbell HTTP server port that
-	// serves /metadata.
-	defaultMetadataPort = "7080"
-	metadataTimeout     = 60 * time.Second
-
+	linkNamingIndex       = "index"
 	linkNamingPredictable = "predictable"
-	linkNamingKernel      = "kernel"
 )
+
+// sysfsRoot is where link names are looked up; tests point it at a fake tree.
+var sysfsRoot = "/sys"
 
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
@@ -42,7 +37,7 @@ func run(logger *slog.Logger) error {
 		return errors.New("no block device specified with environment variable [DEST_DISK]")
 	}
 
-	doc, err := networkDocument(context.Background(), logger)
+	doc, err := networkDocument(logger)
 	if err != nil {
 		return err
 	}
@@ -64,11 +59,10 @@ func run(logger *slog.Logger) error {
 	return nil
 }
 
-// networkDocument returns the YAML to store under META key 0xa. In order of
-// precedence: the operator-supplied NETWORK_CONFIG document, a Hardware spec
-// passed in HARDWARE_SPEC (JSON, as a Workflow template can render it), or the
-// Hardware data served by the Tinkerbell metadata service.
-func networkDocument(ctx context.Context, logger *slog.Logger) ([]byte, error) {
+// networkDocument returns the YAML to store under META key 0xa: the
+// operator-supplied NETWORK_CONFIG document, or one built from the v1alpha2
+// Hardware spec in HARDWARE_SPEC.
+func networkDocument(logger *slog.Logger) ([]byte, error) {
 	if raw := os.Getenv("NETWORK_CONFIG"); raw != "" {
 		if _, err := talosnet.Parse([]byte(raw)); err != nil {
 			return nil, fmt.Errorf("NETWORK_CONFIG: %w", err)
@@ -79,21 +73,33 @@ func networkDocument(ctx context.Context, logger *slog.Logger) ([]byte, error) {
 		return []byte(raw), nil
 	}
 
+	raw := os.Getenv("HARDWARE_SPEC")
+	if raw == "" {
+		return nil, errors.New("no network data: set [HARDWARE_SPEC] to the Hardware spec, or provide [NETWORK_CONFIG]")
+	}
+
+	spec, err := hardware.Parse([]byte(raw))
+	if err != nil {
+		return nil, fmt.Errorf("HARDWARE_SPEC: %w", err)
+	}
+
+	logger.Info("Using hardware data from HARDWARE_SPEC", "interfaces", len(spec.NetworkInterfaces))
+
 	namer, err := newNamer(logger)
 	if err != nil {
 		return nil, err
 	}
 
-	spec, source, err := hardwareSpec(ctx, logger)
+	bond, err := bondFromEnv()
 	if err != nil {
 		return nil, err
 	}
 
-	if len(spec.Interfaces) == 0 {
-		return nil, fmt.Errorf("hardware data from %s has no interfaces; pass the Hardware spec.interfaces through HARDWARE_SPEC, expose them on /metadata, or provide NETWORK_CONFIG", source)
+	if bond != nil {
+		logger.Info("Bonding the interfaces", "bond", bond.Name, "mode", bond.Mode)
 	}
 
-	cfg, err := talosnet.FromHardware(spec, namer)
+	cfg, err := talosnet.FromHardware(spec, talosnet.Options{Namer: namer, Bond: bond})
 	if err != nil {
 		return nil, fmt.Errorf("mapping hardware data to Talos network configuration: %w", err)
 	}
@@ -101,53 +107,55 @@ func networkDocument(ctx context.Context, logger *slog.Logger) ([]byte, error) {
 	return cfg.Marshal()
 }
 
-// hardwareSpec loads the Hardware spec from HARDWARE_SPEC or the metadata
-// service, returning it with a description of where it came from.
-func hardwareSpec(ctx context.Context, logger *slog.Logger) (*hardware.Spec, string, error) {
-	if raw := os.Getenv("HARDWARE_SPEC"); raw != "" {
-		var spec hardware.Spec
-		if err := json.Unmarshal([]byte(raw), &spec); err != nil {
-			return nil, "", fmt.Errorf("HARDWARE_SPEC is not valid Hardware spec JSON: %w", err)
-		}
-
-		logger.Info("Using hardware data from HARDWARE_SPEC", "interfaces", len(spec.Interfaces))
-
-		return &spec, "HARDWARE_SPEC", nil
-	}
-
-	host := os.Getenv("MIRROR_HOST")
-	if host == "" {
-		return nil, "", errors.New("no hardware data source: set [MIRROR_HOST] for the metadata service, or provide [HARDWARE_SPEC] or [NETWORK_CONFIG]")
-	}
-
-	port, ok := os.LookupEnv("METADATA_SERVICE_PORT")
-	if !ok {
-		port = defaultMetadataPort
-	}
-
-	baseURL := "http://" + net.JoinHostPort(host, port)
-	logger.Info("Retrieving hardware data", "url", baseURL+"/metadata")
-
-	spec, err := hardware.Fetch(ctx, &http.Client{Timeout: metadataTimeout}, baseURL)
-	if err != nil {
-		return nil, "", err
-	}
-
-	return spec, baseURL, nil
-}
-
 func newNamer(logger *slog.Logger) (*talosnet.SysfsNamer, error) {
 	mode, ok := os.LookupEnv("LINK_NAMING")
 	if !ok || mode == "" {
-		mode = linkNamingPredictable
+		mode = linkNamingIndex
 	}
 
 	switch mode {
+	case linkNamingIndex:
+		return &talosnet.SysfsNamer{Root: sysfsRoot, Predictable: false, Logger: logger}, nil
 	case linkNamingPredictable:
-		return &talosnet.SysfsNamer{Predictable: true, Logger: logger}, nil
-	case linkNamingKernel:
-		return &talosnet.SysfsNamer{Predictable: false, Logger: logger}, nil
+		return &talosnet.SysfsNamer{Root: sysfsRoot, Predictable: true, Logger: logger}, nil
 	default:
-		return nil, fmt.Errorf("LINK_NAMING must be %q or %q, got %q", linkNamingPredictable, linkNamingKernel, mode)
+		return nil, fmt.Errorf("LINK_NAMING must be %q or %q, got %q", linkNamingIndex, linkNamingPredictable, mode)
 	}
+}
+
+// bondFromEnv returns the bond BOND_MODE asks for, or nil when it is unset.
+// The settings are validated, and defaulted, by talosnet.FromHardware.
+func bondFromEnv() (*talosnet.Bond, error) {
+	mode := strings.TrimSpace(os.Getenv("BOND_MODE"))
+	if mode == "" {
+		for _, name := range []string{"BOND_NAME", "BOND_XMIT_HASH_POLICY", "BOND_LACP_RATE", "BOND_MIIMON"} {
+			if strings.TrimSpace(os.Getenv(name)) != "" {
+				return nil, fmt.Errorf("[%s] is set but [BOND_MODE] is not; set BOND_MODE to bond the interfaces", name)
+			}
+		}
+
+		return nil, nil //nolint:nilnil // no bond requested
+	}
+
+	bond := &talosnet.Bond{
+		Name:           os.Getenv("BOND_NAME"),
+		Mode:           mode,
+		XmitHashPolicy: os.Getenv("BOND_XMIT_HASH_POLICY"),
+		LACPRate:       os.Getenv("BOND_LACP_RATE"),
+	}
+
+	if raw := strings.TrimSpace(os.Getenv("BOND_MIIMON")); raw != "" {
+		miimon, err := strconv.ParseUint(raw, 10, 32)
+		if err != nil {
+			return nil, fmt.Errorf("BOND_MIIMON must be a number of milliseconds, got %q", raw)
+		}
+
+		bond.MIIMon = new(uint32(miimon))
+	}
+
+	if err := bond.Validate(); err != nil {
+		return nil, fmt.Errorf("BOND_*: %w", err)
+	}
+
+	return bond, nil
 }

@@ -4,31 +4,37 @@ quay.io/tinkerbell/actions/talosmeta:latest
 
 This action writes [Talos Linux](https://www.talos.dev) metal platform network
 configuration into the `META` partition of a disk that already holds a Talos
-image. It retrieves the machine's Hardware data from the Tinkerbell metadata
-service the same way the `rootio` action does, maps it onto the Talos network
-configuration document, and stores the YAML under META key `0xa`
-(`MetalNetworkPlatformConfig`). This is what
+image. It maps the network interfaces of the machine's Tinkerbell v1alpha2
+Hardware onto the Talos network configuration document and stores the YAML
+under META key `0xa` (`MetalNetworkPlatformConfig`). This is what
 `talosctl meta write 0xa "$(cat network.yaml)"` does on a running node, done
 offline before the first boot.
 
 Talos applies the document before it fetches its machine configuration, so a
 node gets a static address, default route, hostname, DNS and NTP even when the
-Tinkerbell DHCP server no longer serves it after provisioning.
+Tinkerbell DHCP server no longer serves it after provisioning. Several
+interfaces can be bonded.
 
 ```yaml
-actions:
-- name: "stream-talos-image"
-  image: quay.io/tinkerbell/actions/oci2disk:latest
-  timeout: 600
-  environment:
-    DEST_DISK: /dev/sda
-    IMG_URL: "192.168.1.2:5000/talos/metal-amd64:v1.14.0"
-- name: "write-talos-network-config"
-  image: quay.io/tinkerbell/actions/talosmeta:latest
-  timeout: 60
-  environment:
-    DEST_DISK: /dev/sda
-    MIRROR_HOST: 192.168.1.2
+apiVersion: tinkerbell.org/v1alpha2
+kind: Task
+metadata:
+  name: talos-install
+spec:
+  actions:
+  - name: stream-talos-image
+    image: quay.io/tinkerbell/actions/oci2disk:latest
+    timeoutSeconds: 600
+    env:
+      DEST_DISK: /dev/sda
+      IMG_URL: 192.168.1.2:5000/talos/metal-amd64:v1.14.0
+  - name: write-talos-network-config
+    image: quay.io/tinkerbell/actions/talosmeta:latest
+    timeoutSeconds: 60
+    env:
+      DEST_DISK: /dev/sda
+      HARDWARE_SPEC: '{{ dict "networkInterfaces" (dig "networkInterfaces" (dict) .hardware.spec) | toJson }}'
+      BOND_MODE: '{{ dig "instance" "vars" "bondMode" "" .hardware.spec }}'
 ```
 
 ## Environment Variables
@@ -36,33 +42,40 @@ actions:
 | Variable | Required | Default | Description |
 | --- | --- | --- | --- |
 | `DEST_DISK` | yes | | Block device holding the Talos image, for example `/dev/sda`. The partition named `META` is located through the GPT, so partition device nodes are not needed. |
-| `MIRROR_HOST` | unless `NETWORK_CONFIG` or `HARDWARE_SPEC` is set | | Host of the Tinkerbell metadata service. |
-| `METADATA_SERVICE_PORT` | no | `7080` | Port of the consolidated Tinkerbell HTTP server that serves `/metadata`. |
-| `HARDWARE_SPEC` | no | | The Hardware `spec` (or just its `interfaces` and `metadata.instance`) as JSON. Takes precedence over the metadata service; a Workflow template can render it from `.hardware.spec`, see below. |
+| `HARDWARE_SPEC` | unless `NETWORK_CONFIG` is set | | The v1alpha2 Hardware `spec`, or any JSON object holding its `networkInterfaces`. See below. |
 | `NETWORK_CONFIG` | no | | A complete Talos network configuration document. When set nothing else is consulted and the YAML is written verbatim, exactly like `talosctl meta write 0xa`. |
-| `LINK_NAMING` | no | `predictable` | How interface names are derived when the Hardware does not set `iface_name`; see below. |
+| `LINK_NAMING` | no | `index` | How interface names are derived: `index` or `predictable`; see below. |
+| `BOND_MODE` | no | | Bond every interface of the Hardware into one bond: `balance-rr`, `active-backup`, `balance-xor`, `broadcast`, `802.3ad`, `balance-tlb` or `balance-alb`. Empty means no bond. |
+| `BOND_NAME` | no | `bond0` | Name of the bond link. |
+| `BOND_XMIT_HASH_POLICY` | no | `layer3+4` | `layer2`, `layer3+4`, `layer2+3`, `encap2+3` or `encap3+4`. |
+| `BOND_LACP_RATE` | no | kernel default, `slow` | `slow` or `fast`; only valid with `BOND_MODE=802.3ad`. |
+| `BOND_MIIMON` | no | `100` | Link monitoring interval in milliseconds; `0` disables it. The up and down delays are twice the interval. |
 
-Re-running the action replaces key `0xa` and leaves every other META key intact.
+The `BOND_*` settings other than `BOND_MODE` are rejected when `BOND_MODE` is
+empty. Re-running the action replaces key `0xa` and leaves every other META key
+intact.
 
-## Passing Hardware data from the Workflow template
+## Passing Hardware data from the Task
 
-Tinkerbell exposes the Hardware object to Workflow templates as `.hardware`,
-so the template can hand the relevant part of the spec straight to the action
-without any metadata service round trip:
+Tinkerbell renders every string of a v1alpha2 Task as a template with the
+Hardware object under `.hardware`, so the Task hands the interfaces straight
+to the action:
 
 ```yaml
-- name: "write-talos-network-config"
-  image: quay.io/tinkerbell/actions/talosmeta:latest
-  timeout: 120
-  environment:
-    DEST_DISK: /dev/sda
-    HARDWARE_SPEC: {{ dict "interfaces" (dig "interfaces" (list) .hardware.spec) "metadata" (dict "instance" (dict "hostname" (dig "metadata" "instance" "hostname" "" .hardware.spec) "ips" (dig "metadata" "instance" "ips" (list) .hardware.spec))) | toJson | quote }}
+HARDWARE_SPEC: '{{ dict "networkInterfaces" (dig "networkInterfaces" (dict) .hardware.spec) | toJson }}'
 ```
 
-`dig` keeps the render working when a field is absent, and `quote` produces
-a YAML double-quoted scalar. Only `interfaces` and `metadata.instance` are
-needed, so the machine configuration in `spec.userData` never leaves the
-Hardware object.
+Only `networkInterfaces` is passed, so the machine configuration in
+`spec.instance.userdata` never leaves the Hardware object. `dig` keeps the
+render working when the field is absent. A v1alpha1 spec, with its
+`interfaces` list, is rejected with a message saying so.
+
+The bond settings can come from the Hardware too, for example from
+`spec.instance.vars`, so machines sharing a Task can bond differently:
+
+```yaml
+BOND_MODE: '{{ dig "instance" "vars" "bondMode" "" .hardware.spec }}'
+```
 
 ## Mapping
 
@@ -71,98 +84,104 @@ The document follows the Talos
 format. Every entry is written on the `platform` layer, so the machine
 configuration can still override it.
 
-For each `spec.interfaces[]` entry with `dhcp.ip.address`:
+For each address in `networkInterfaces[].ipam.ipv4` and `ipam.ipv6`:
 
-- a link `{name, up: true}`; with `dhcp.vlan_id` set, also a logical VLAN
-  link `<name>.<vid>` that carries the address and routes,
+- the interface's link `{name, up: true}`; with `vlanID` set, also a logical
+  VLAN link `<name>.<vid>` that carries the address and routes. A list of
+  VLAN IDs is rejected, since only one can carry the address; `0` means
+  untagged,
 - an address `<address>/<prefix>` with `family`, `scope: global` and
-  `flags: permanent`; the prefix length comes from `dhcp.ip.netmask` (dotted
-  quad or a bare length),
-- a default route through `dhcp.ip.gateway` (`table: main`, priority `1024`
-  for IPv4 and `2048` for IPv6),
-- one route per `dhcp.classless_static_routes` entry.
+  `flags: permanent`,
+- a default route through `gateway` (`table: main`, priority `1024` for IPv4
+  and `2048` for IPv6),
+- one route per `classlessStaticRoutes` entry.
 
-For the machine:
+For the machine, from the interfaces with an address, in link order:
 
-- `hostnames` from `metadata.instance.hostname`, falling back to the first
-  `dhcp.hostname`; the domain comes from `dhcp.domain_name` or the FQDN,
-- `resolvers` from the union of `dhcp.name_servers`,
-- `timeServers` from the union of `dhcp.time_servers`,
-- `externalIPs` from `metadata.instance.ips[]` entries marked `public`.
+- `hostnames` from the first `hostname`; the domain is the first
+  `domainSearchList` entry, which is also the domain name smee serves,
+- `resolvers` from the union of the `nameservers` given as addresses (Talos
+  resolvers are addresses, so host names are skipped, as smee does), with the
+  `domainSearchList` entries as search domains,
+- `timeServers` from the union of the `ntpServers`.
 
-Interfaces without a static address are left alone so Talos keeps using DHCP
-on them. The action fails when no interface has a static address.
+Interfaces without an address are left alone so Talos keeps using DHCP on
+them, and are not looked up. The action fails when no interface has an
+address.
 
-Example output for one interface:
+## Bonding
+
+With `BOND_MODE` set, every interface in `networkInterfaces` becomes a slave
+of the bond, in link order, so the first one (`eth0`) gives the bond its MAC.
+The addresses, VLAN and routes go on the bond instead of an interface. Usually
+only the interface the machine netboots from has `ipam`; when several do, they
+must agree on the address of each family. Every interface must exist on the
+machine.
 
 ```yaml
-addresses:
-    - address: 10.0.80.10/24
-      linkName: enp1s0
-      family: inet4
-      scope: global
-      flags: permanent
-      layer: platform
 links:
-    - name: enp1s0
+    - name: bond0
+      logical: true
       up: true
+      kind: bond
+      type: ether
+      bondMaster:
+        mode: 802.3ad
+        xmitHashPolicy: layer3+4
+        miimon: 100
+        updelay: 200
+        downdelay: 200
+        resendIgmp: 1
+        lpInterval: 1
+        packetsPerSlave: 1
+        numPeerNotif: 1
+        tlbLogicalLb: 1
+        useCarrier: true
+        adActorSysPrio: 65535
+        adLacpActive: "on"
       layer: platform
-routes:
-    - family: inet4
-      gateway: 10.0.80.1
-      outLinkName: enp1s0
-      table: main
-      priority: 1024
-      scope: global
-      type: unicast
-      protocol: static
+    - name: eth0
+      up: true
+      masterName: bond0
       layer: platform
-hostnames:
-    - hostname: node1
-      domainname: example.com
+    - name: eth1
+      up: true
+      masterName: bond0
+      slaveIndex: 1
       layer: platform
-resolvers:
-    - dnsServers:
-        - 10.0.0.2
-      layer: platform
-timeServers:
-    - timeServers:
-        - 10.0.0.3
-      layer: platform
-operators: []
-externalIPs: []
 ```
+
+The defaults follow the bonds Talos builds for its Equinix Metal platform.
+The metal platform passes the META document to the network controllers
+unchanged, without the defaulting Talos applies to bonds it builds itself, so
+the action writes those values (`lpInterval`, `resendIgmp` and the rest) out;
+zeroes there are rejected by the kernel.
 
 ## Interface names
 
-Talos names interfaces with udev's predictable scheme (`enp1s0`, `eno1`,
-`ens3`) unless it boots with `net.ifnames=0`, while HookOS uses kernel names
-(`eth0`). The name written to META has to be the one Talos will see.
+The name written to META has to be the one Talos will see.
 
-1. `dhcp.iface_name` is used verbatim when set. Set it in the Hardware to pin
-   the name.
-2. Otherwise the interface carrying `dhcp.mac` is looked up in sysfs.
-   - `LINK_NAMING=predictable` (default) derives the udev name: onboard
-     index (`eno<n>`), then PCI hotplug slot (`ens<n>`), then PCI path
-     (`enp<bus>s<slot>[f<function>]`). Non-PCI devices keep the kernel name
-     and a warning is logged.
-   - `LINK_NAMING=kernel` keeps the HookOS name, for Talos images booted with
-     `net.ifnames=0`.
+- `LINK_NAMING=index` (default) names each interface `eth<N>`, where `N` is
+  the index the installation environment's kernel gave it: the interface
+  carrying the MAC is looked up in sysfs and must be named `eth<N>`. Talos
+  booted with `net.ifnames=0` (for example through the `taloscmdline` action)
+  keeps kernel names, so the names match as long as Talos finds the network
+  devices in the same order. An installation environment that renames
+  interfaces makes the index unknown, and the action fails; boot it with
+  `net.ifnames=0` too.
+- `LINK_NAMING=predictable` derives the name udev's predictable scheme gives
+  the interface, which Talos uses without `net.ifnames=0`: onboard index
+  (`eno<n>`), then PCI hotplug slot (`ens<n>`), then PCI path
+  (`enp<bus>s<slot>[f<function>]`). Non-PCI devices keep the kernel name and a
+  warning is logged.
+
+Only physical interfaces are matched, so a VLAN or bond sharing the MAC in
+the installation environment is ignored.
 
 ## Verifying on the node
 
-```
+```sh
 talosctl -n <node> get meta 0x0a -o yaml
+talosctl -n <node> get links
 talosctl -n <node> get addresses
 ```
-
-## Metadata service requirements
-
-The document is built from `interfaces[].dhcp` and `metadata.instance` in the
-JSON returned by `/metadata`. Tinkerbell's tootles `/metadata` endpoint
-currently reduces the Hardware spec to the storage fields the `rootio` action
-needs, so the interfaces are missing and the action stops with a message
-saying so. Extending tootles' `HackInstance` type with `interfaces` and
-`metadata.instance.hostname`/`ips` (the JSON tags already match the Hardware
-CRD) makes the data available. Until then, `NETWORK_CONFIG` can carry a
-document rendered by the workflow template.

@@ -3,9 +3,7 @@ package main
 import (
 	"io"
 	"log/slog"
-	"net/http"
-	"net/http/httptest"
-	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -53,7 +51,6 @@ func TestRunWritesNetworkConfigPassthrough(t *testing.T) {
 
 	t.Setenv("DEST_DISK", disk)
 	t.Setenv("NETWORK_CONFIG", doc)
-	t.Setenv("MIRROR_HOST", "")
 
 	if err := run(quietLogger()); err != nil {
 		t.Fatalf("run() error: %v", err)
@@ -77,67 +74,50 @@ func TestRunRejectsInvalidPassthrough(t *testing.T) {
 	}
 }
 
-func TestRunBuildsDocumentFromMetadataService(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/metadata" {
-			http.NotFound(w, r)
-			return
+// fakeSysfs points link naming at a sysfs tree holding one physical
+// interface per name, carrying the MAC it maps to.
+func fakeSysfs(t *testing.T, links map[string]string) {
+	t.Helper()
+
+	root := t.TempDir()
+	for name, mac := range links {
+		dir := filepath.Join(root, "class", "net", name)
+		device := filepath.Join(root, "devices", "pci0000:00", name)
+		for _, d := range []string{dir, device} {
+			if err := os.MkdirAll(d, 0o755); err != nil {
+				t.Fatal(err)
+			}
 		}
-		_, _ = w.Write([]byte(`{"interfaces":[{"dhcp":{"mac":"52:54:00:12:34:01","iface_name":"enp1s0","hostname":"node1",
-			"ip":{"address":"10.0.80.10","netmask":"255.255.255.0","gateway":"10.0.80.1","family":4}}}],
-			"metadata":{"instance":{"hostname":"node1.example.com"}}}`))
-	}))
-	defer srv.Close()
-
-	u, err := url.Parse(srv.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	disk := newTalosLikeDisk(t)
-	t.Setenv("DEST_DISK", disk)
-	t.Setenv("NETWORK_CONFIG", "")
-	t.Setenv("MIRROR_HOST", u.Hostname())
-	t.Setenv("METADATA_SERVICE_PORT", u.Port())
-
-	if err := run(quietLogger()); err != nil {
-		t.Fatalf("run() error: %v", err)
-	}
-
-	got, ok, err := meta.ReadTag(disk, meta.MetalNetworkPlatformConfig)
-	if err != nil || !ok {
-		t.Fatalf("expected tag 0xa to be written, ok=%v err=%v", ok, err)
-	}
-	for _, want := range []string{"address: 10.0.80.10/24", "linkName: enp1s0", "gateway: 10.0.80.1", "hostname: node1", "domainname: example.com"} {
-		if !strings.Contains(string(got), want) {
-			t.Fatalf("expected document to contain %q:\n%s", want, got)
+		if err := os.WriteFile(filepath.Join(dir, "address"), []byte(mac+"\n"), 0o644); err != nil {
+			t.Fatal(err)
 		}
+		if err := os.Symlink(device, filepath.Join(dir, "device")); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	previous := sysfsRoot
+	sysfsRoot = root
+	t.Cleanup(func() { sysfsRoot = previous })
+}
+
+// clearEnv unsets the variables a test does not set, so the environment of
+// the test run cannot leak in.
+func clearEnv(t *testing.T) {
+	t.Helper()
+
+	for _, name := range []string{"NETWORK_CONFIG", "HARDWARE_SPEC", "LINK_NAMING", "BOND_MODE", "BOND_NAME", "BOND_XMIT_HASH_POLICY", "BOND_LACP_RATE", "BOND_MIIMON"} {
+		t.Setenv(name, "")
 	}
 }
 
-func TestRunFailsWhenMetadataHasNoInterfaces(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"metadata":{"instance":{"storage":{"disks":[]}}}}`))
-	}))
-	defer srv.Close()
-
-	u, err := url.Parse(srv.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	t.Setenv("DEST_DISK", newTalosLikeDisk(t))
-	t.Setenv("NETWORK_CONFIG", "")
-	t.Setenv("MIRROR_HOST", u.Hostname())
-	t.Setenv("METADATA_SERVICE_PORT", u.Port())
-
-	err = run(quietLogger())
-	if err == nil || !strings.Contains(err.Error(), "no interfaces") {
-		t.Fatalf("expected a no-interfaces error, got %v", err)
-	}
-}
+const hardwareSpecJSON = `{"networkInterfaces":{
+"52:54:00:12:34:01":{"ipam":{"ipv4":{"address":"10.0.80.10","prefix":"24","gateway":"10.0.80.1","hostname":"node1",
+"domainSearchList":["example.com"],"nameservers":["10.0.0.2"]}}},
+"52:54:00:12:34:02":{}}}`
 
 func TestRunRequiresDestDisk(t *testing.T) {
+	clearEnv(t)
 	t.Setenv("DEST_DISK", "")
 
 	if err := run(quietLogger()); err == nil || !strings.Contains(err.Error(), "DEST_DISK") {
@@ -145,26 +125,21 @@ func TestRunRequiresDestDisk(t *testing.T) {
 	}
 }
 
-func TestRunRejectsUnknownLinkNaming(t *testing.T) {
+func TestRunRequiresHardwareSpec(t *testing.T) {
+	clearEnv(t)
 	t.Setenv("DEST_DISK", newTalosLikeDisk(t))
-	t.Setenv("NETWORK_CONFIG", "")
-	t.Setenv("MIRROR_HOST", "127.0.0.1")
-	t.Setenv("LINK_NAMING", "random")
 
-	if err := run(quietLogger()); err == nil || !strings.Contains(err.Error(), "LINK_NAMING") {
-		t.Fatalf("expected a LINK_NAMING error, got %v", err)
+	if err := run(quietLogger()); err == nil || !strings.Contains(err.Error(), "HARDWARE_SPEC") {
+		t.Fatalf("expected a HARDWARE_SPEC error, got %v", err)
 	}
 }
 
-const hardwareSpecJSON = `{"interfaces":[{"dhcp":{"mac":"52:54:00:12:34:01","iface_name":"enp1s0","hostname":"node1",
-"name_servers":["10.0.0.2"],"ip":{"address":"10.0.80.10","netmask":"255.255.255.0","gateway":"10.0.80.1","family":4}}}],
-"metadata":{"instance":{"hostname":"node1.example.com"}}}`
-
 func TestRunBuildsDocumentFromHardwareSpec(t *testing.T) {
+	clearEnv(t)
+	fakeSysfs(t, map[string]string{"eth0": "52:54:00:12:34:01", "eth1": "52:54:00:12:34:02"})
+
 	disk := newTalosLikeDisk(t)
 	t.Setenv("DEST_DISK", disk)
-	t.Setenv("NETWORK_CONFIG", "")
-	t.Setenv("MIRROR_HOST", "")
 	t.Setenv("HARDWARE_SPEC", hardwareSpecJSON)
 
 	if err := run(quietLogger()); err != nil {
@@ -175,42 +150,68 @@ func TestRunBuildsDocumentFromHardwareSpec(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("expected tag 0xa to be written, ok=%v err=%v", ok, err)
 	}
-	for _, want := range []string{"address: 10.0.80.10/24", "linkName: enp1s0", "gateway: 10.0.80.1", "hostname: node1", "domainname: example.com", "- 10.0.0.2"} {
+	for _, want := range []string{"address: 10.0.80.10/24", "linkName: eth0", "gateway: 10.0.80.1", "hostname: node1", "domainname: example.com", "- 10.0.0.2"} {
+		if !strings.Contains(string(got), want) {
+			t.Fatalf("expected document to contain %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(string(got), "eth1") {
+		t.Fatalf("expected the interface without an address to be left alone:\n%s", got)
+	}
+}
+
+func TestRunBondsTheInterfaces(t *testing.T) {
+	clearEnv(t)
+	fakeSysfs(t, map[string]string{"eth0": "52:54:00:12:34:01", "eth1": "52:54:00:12:34:02"})
+
+	disk := newTalosLikeDisk(t)
+	t.Setenv("DEST_DISK", disk)
+	t.Setenv("HARDWARE_SPEC", hardwareSpecJSON)
+	t.Setenv("BOND_MODE", "802.3ad")
+	t.Setenv("BOND_LACP_RATE", "fast")
+	t.Setenv("BOND_MIIMON", "200")
+
+	if err := run(quietLogger()); err != nil {
+		t.Fatalf("run() error: %v", err)
+	}
+
+	got, _, err := meta.ReadTag(disk, meta.MetalNetworkPlatformConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"kind: bond", "mode: 802.3ad", "lacpRate: fast", "miimon: 200", "updelay: 400", "masterName: bond0", "slaveIndex: 1", "linkName: bond0", "outLinkName: bond0"} {
 		if !strings.Contains(string(got), want) {
 			t.Fatalf("expected document to contain %q:\n%s", want, got)
 		}
 	}
 }
 
-func TestRunHardwareSpecTakesPrecedenceOverMetadataService(t *testing.T) {
-	disk := newTalosLikeDisk(t)
-	t.Setenv("DEST_DISK", disk)
-	t.Setenv("NETWORK_CONFIG", "")
-	t.Setenv("MIRROR_HOST", "192.0.2.1") // unreachable on purpose
-	t.Setenv("METADATA_SERVICE_PORT", "9")
-	t.Setenv("HARDWARE_SPEC", hardwareSpecJSON)
-
-	if err := run(quietLogger()); err != nil {
-		t.Fatalf("run() error: %v", err)
+func TestRunRejectsBadSettings(t *testing.T) {
+	tests := []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{"unknown link naming", map[string]string{"LINK_NAMING": "kernel"}, "LINK_NAMING"},
+		{"bond setting without a mode", map[string]string{"BOND_LACP_RATE": "fast"}, "BOND_MODE"},
+		{"unknown bond mode", map[string]string{"BOND_MODE": "lacp"}, "bond mode"},
+		{"invalid miimon", map[string]string{"BOND_MODE": "802.3ad", "BOND_MIIMON": "100ms"}, "BOND_MIIMON"},
+		{"v1alpha1 spec", map[string]string{"HARDWARE_SPEC": `{"interfaces":[{"dhcp":{"mac":"52:54:00:12:34:01"}}]}`}, "v1alpha1"},
+		{"invalid spec", map[string]string{"HARDWARE_SPEC": "{not json"}, "HARDWARE_SPEC"},
 	}
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearEnv(t)
+			fakeSysfs(t, map[string]string{"eth0": "52:54:00:12:34:01", "eth1": "52:54:00:12:34:02"})
+			t.Setenv("DEST_DISK", newTalosLikeDisk(t))
+			t.Setenv("HARDWARE_SPEC", hardwareSpecJSON)
+			for k, v := range tt.env {
+				t.Setenv(k, v)
+			}
 
-func TestRunRejectsInvalidHardwareSpec(t *testing.T) {
-	t.Setenv("DEST_DISK", newTalosLikeDisk(t))
-	t.Setenv("NETWORK_CONFIG", "")
-	t.Setenv("HARDWARE_SPEC", "{not json")
-
-	if err := run(quietLogger()); err == nil || !strings.Contains(err.Error(), "HARDWARE_SPEC") {
-		t.Fatalf("expected a HARDWARE_SPEC error, got %v", err)
-	}
-}
-
-func TestRunRejectsHardwareSpecWithoutInterfaces(t *testing.T) {
-	t.Setenv("DEST_DISK", newTalosLikeDisk(t))
-	t.Setenv("NETWORK_CONFIG", "")
-	t.Setenv("HARDWARE_SPEC", `{"metadata":{"instance":{"hostname":"x"}}}`)
-
-	if err := run(quietLogger()); err == nil || !strings.Contains(err.Error(), "no interfaces") {
-		t.Fatalf("expected a no-interfaces error, got %v", err)
+			if err := run(quietLogger()); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected an error containing %q, got %v", tt.want, err)
+			}
+		})
 	}
 }

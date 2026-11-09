@@ -10,16 +10,25 @@ import (
 	"strings"
 )
 
-// SysfsNamer finds the interface that carries a MAC address by reading sysfs.
+// SysfsNamer finds the physical interface that carries a MAC address by
+// reading the sysfs of the installation environment (HookOS).
 //
-// With Predictable set it derives the name udev's predictable naming scheme
-// assigns (the scheme Talos uses unless booted with net.ifnames=0): onboard
-// index (eno1), then PCI hotplug slot (ens3), then PCI path (enp1s0f1). When
-// the device is not on PCI the kernel name is returned unchanged.
+// By default it returns eth<N>, where N is the index the kernel gave the
+// interface when it named it eth<N>. Talos booted with net.ifnames=0 keeps
+// those kernel names, so the link names match as long as Talos finds the
+// network devices in the same order the installation environment did. An
+// interface the installation environment renamed has no known index and is an
+// error.
+//
+// With Predictable set it instead derives the name udev's predictable naming
+// scheme assigns (the scheme Talos uses unless booted with net.ifnames=0):
+// onboard index (eno1), then PCI hotplug slot (ens3), then PCI path
+// (enp1s0f1). When the device is not on PCI the kernel name is returned
+// unchanged.
 type SysfsNamer struct {
 	// Root is the sysfs mount point; defaults to /sys.
 	Root string
-	// Predictable selects udev-style names instead of kernel names.
+	// Predictable selects udev-style names instead of eth<N>.
 	Predictable bool
 	// Logger receives a warning when a predictable name cannot be derived.
 	Logger *slog.Logger
@@ -32,6 +41,9 @@ const (
 )
 
 var pciAddress = regexp.MustCompile(`^([0-9a-f]{4}):([0-9a-f]{2}):([0-9a-f]{2})\.([0-7])$`)
+
+// kernelIndexName matches the names the kernel gives ethernet devices.
+var kernelIndexName = regexp.MustCompile(`^eth[0-9]+$`)
 
 // Name implements Namer.
 func (n *SysfsNamer) Name(mac string) (string, error) {
@@ -61,8 +73,18 @@ func (n *SysfsNamer) Name(mac string) (string, error) {
 			continue
 		}
 
+		// VLAN, bond and bridge links can share the MAC of a physical
+		// interface; only physical ones have a device.
+		if _, err := os.Stat(filepath.Join(linkDir, "device")); err != nil {
+			continue
+		}
+
 		kernelName := entry.Name()
 		if !n.Predictable {
+			if !kernelIndexName.MatchString(kernelName) {
+				return "", fmt.Errorf("the installation environment named the interface with MAC %s %q, not eth<N>, so its kernel index is unknown; boot it with net.ifnames=0 or use predictable link naming", mac, kernelName)
+			}
+
 			return kernelName, nil
 		}
 
@@ -71,13 +93,13 @@ func (n *SysfsNamer) Name(mac string) (string, error) {
 		}
 
 		if n.Logger != nil {
-			n.Logger.Warn("Interface is not a PCI device, keeping the kernel name; set iface_name in the Hardware if Talos names it differently", "interface", kernelName, "mac", mac)
+			n.Logger.Warn("Interface is not a PCI device, keeping the kernel name; provide NETWORK_CONFIG if Talos names it differently", "interface", kernelName, "mac", mac)
 		}
 
 		return kernelName, nil
 	}
 
-	return "", fmt.Errorf("no interface with MAC %s found under %s", mac, netDir)
+	return "", fmt.Errorf("no physical interface with MAC %s found under %s", mac, netDir)
 }
 
 func predictableName(root, linkDir string) (string, bool) {

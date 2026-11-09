@@ -1,102 +1,80 @@
 package hardware
 
 import (
-	"context"
-	"net/http"
-	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
-const sampleMetadata = `{
-  "interfaces": [
-    {
-      "dhcp": {
-        "mac": "52:54:00:12:34:01",
-        "hostname": "node1",
-        "domain_name": "example.com",
-        "name_servers": ["10.0.0.2"],
-        "time_servers": ["10.0.0.3"],
-        "iface_name": "enp1s0",
-        "vlan_id": "100",
-        "ip": {"address": "10.0.80.10", "netmask": "255.255.255.0", "gateway": "10.0.80.1", "family": 4},
-        "classless_static_routes": [{"destination_descriptor": "192.168.0.0/16", "router": "10.0.80.254"}]
-      }
-    }
-  ],
-  "metadata": {
-    "instance": {
-      "id": "i-1",
-      "hostname": "node1.example.com",
-      "ips": [{"address": "203.0.113.5", "family": 4, "public": true}],
-      "storage": {"disks": [{"device": "/dev/sda"}]}
-    }
+func TestParseDecodesNetworkInterfaces(t *testing.T) {
+	raw := `{
+  "instance": {"userdata": "secret machine config"},
+  "networkInterfaces": {
+    "52:54:00:AB:CD:01": {
+      "dhcp": {"ipv4": {"leaseTimeSeconds": 86400}},
+      "ipam": {
+        "ipv4": {
+          "address": "10.0.80.10", "prefix": "24", "gateway": "10.0.80.1", "hostname": "node1",
+          "vlanID": "80", "nameservers": ["10.0.0.2"], "ntpServers": ["10.0.0.3"],
+          "domainSearchList": ["example.com"],
+          "classlessStaticRoutes": [{"destinationDescriptor": "192.168.0.0/16", "router": "10.0.80.254"}]
+        },
+        "ipv6": {"address": "2001:db8::10", "prefix": "64"}
+      },
+      "netboot": {"disabled": true}
+    },
+    "52:54:00:ab:cd:02": {}
   }
 }`
 
-func TestFetchDecodesInterfacesAndInstance(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/metadata" {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(sampleMetadata))
-	}))
-	defer srv.Close()
-
-	spec, err := Fetch(context.Background(), srv.Client(), srv.URL)
+	spec, err := Parse([]byte(raw))
 	if err != nil {
-		t.Fatalf("Fetch() error: %v", err)
+		t.Fatalf("Parse() error: %v", err)
 	}
 
-	if len(spec.Interfaces) != 1 {
-		t.Fatalf("expected 1 interface, got %d", len(spec.Interfaces))
+	if len(spec.NetworkInterfaces) != 2 {
+		t.Fatalf("expected 2 interfaces, got %d", len(spec.NetworkInterfaces))
 	}
-	dhcp := spec.Interfaces[0].DHCP
-	if dhcp == nil {
-		t.Fatal("expected dhcp block")
+
+	iface, ok := spec.NetworkInterfaces["52:54:00:ab:cd:01"]
+	if !ok {
+		t.Fatalf("expected the MAC to be lower cased, got %v", spec.NetworkInterfaces)
 	}
-	if dhcp.MAC != "52:54:00:12:34:01" || dhcp.IfaceName != "enp1s0" || dhcp.VLANID != "100" {
-		t.Fatalf("unexpected dhcp: %+v", dhcp)
+
+	v4 := iface.IPAM.IPv4
+	if v4.Address != "10.0.80.10" || v4.Prefix != "24" || v4.Gateway != "10.0.80.1" || v4.Hostname != "node1" || v4.VLANID != "80" {
+		t.Fatalf("unexpected ipv4: %+v", v4)
 	}
-	if dhcp.IP == nil || dhcp.IP.Address != "10.0.80.10" || dhcp.IP.Netmask != "255.255.255.0" || dhcp.IP.Gateway != "10.0.80.1" || dhcp.IP.Family != 4 {
-		t.Fatalf("unexpected ip: %+v", dhcp.IP)
+	if len(v4.Nameservers) != 1 || len(v4.NTPServers) != 1 || len(v4.DomainSearchList) != 1 || len(v4.ClasslessStaticRoutes) != 1 {
+		t.Fatalf("unexpected ipv4 lists: %+v", v4)
 	}
-	if len(dhcp.ClasslessStaticRoutes) != 1 || dhcp.ClasslessStaticRoutes[0].DestinationDescriptor != "192.168.0.0/16" || dhcp.ClasslessStaticRoutes[0].Router != "10.0.80.254" {
-		t.Fatalf("unexpected routes: %+v", dhcp.ClasslessStaticRoutes)
+	if v4.ClasslessStaticRoutes[0].Router != "10.0.80.254" {
+		t.Fatalf("unexpected route: %+v", v4.ClasslessStaticRoutes[0])
 	}
-	if spec.Metadata == nil || spec.Metadata.Instance == nil {
-		t.Fatal("expected metadata.instance")
+	if iface.IPAM.IPv6 == nil || iface.IPAM.IPv6.Address != "2001:db8::10" {
+		t.Fatalf("unexpected ipv6: %+v", iface.IPAM.IPv6)
 	}
-	inst := spec.Metadata.Instance
-	if inst.ID != "i-1" || inst.Hostname != "node1.example.com" {
-		t.Fatalf("unexpected instance: %+v", inst)
-	}
-	if len(inst.IPs) != 1 || inst.IPs[0].Address != "203.0.113.5" || !inst.IPs[0].Public {
-		t.Fatalf("unexpected instance ips: %+v", inst.IPs)
+	if spec.NetworkInterfaces["52:54:00:ab:cd:02"].IPAM != nil {
+		t.Fatal("expected no IPAM on the second interface")
 	}
 }
 
-func TestFetchRejectsNon200(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "no hardware found for source ip", http.StatusNotFound)
-	}))
-	defer srv.Close()
-
-	_, err := Fetch(context.Background(), srv.Client(), srv.URL)
-	if err == nil {
-		t.Fatal("expected an error for a 404 response")
+func TestParseErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"invalid json", `{not json`, "decoding Hardware spec"},
+		{"v1alpha1 spec", `{"interfaces":[{"dhcp":{"mac":"52:54:00:12:34:01"}}]}`, "v1alpha1"},
+		{"no interfaces", `{"instance":{"vars":{"a":"b"}}}`, "no networkInterfaces"},
+		{"duplicate after lower casing", `{"networkInterfaces":{"52:54:00:ab:cd:01":{},"52:54:00:AB:CD:01":{}}}`, "more than once"},
 	}
-}
-
-func TestFetchRejectsInvalidJSON(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte("not json"))
-	}))
-	defer srv.Close()
-
-	_, err := Fetch(context.Background(), srv.Client(), srv.URL)
-	if err == nil {
-		t.Fatal("expected an error for invalid JSON")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Parse([]byte(tt.raw))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected an error containing %q, got %v", tt.want, err)
+			}
+		})
 	}
 }

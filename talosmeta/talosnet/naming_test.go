@@ -3,6 +3,7 @@ package talosnet
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -66,7 +67,7 @@ func itoa(i int) string {
 	return string(rune('0' + i))
 }
 
-func TestSysfsNamerKernelName(t *testing.T) {
+func TestSysfsNamerIndexName(t *testing.T) {
 	fs := newFakeSysfs(t)
 	fs.addLink("eth0", "52:54:00:12:34:01", "devices/pci0000:00/0000:00:03.0/virtio0")
 	fs.addLink("eth1", "52:54:00:12:34:02", "devices/pci0000:00/0000:00:04.0/virtio1")
@@ -83,7 +84,7 @@ func TestSysfsNamerKernelName(t *testing.T) {
 
 func TestSysfsNamerMatchesMACCaseInsensitively(t *testing.T) {
 	fs := newFakeSysfs(t)
-	fs.addLink("eth0", "52:54:00:ab:cd:ef", "")
+	fs.addLink("eth0", "52:54:00:ab:cd:ef", "devices/pci0000:00/0000:00:03.0/virtio0")
 
 	namer := &SysfsNamer{Root: fs.root, Predictable: false}
 	got, err := namer.Name("52:54:00:AB:CD:EF")
@@ -92,6 +93,40 @@ func TestSysfsNamerMatchesMACCaseInsensitively(t *testing.T) {
 	}
 	if got != "eth0" {
 		t.Fatalf("expected eth0, got %q", got)
+	}
+}
+
+func TestSysfsNamerIndexRejectsRenamedInterface(t *testing.T) {
+	fs := newFakeSysfs(t)
+	fs.addLink("enp1s0", "52:54:00:12:34:01", "devices/pci0000:00/0000:00:1c.0/0000:01:00.0")
+
+	namer := &SysfsNamer{Root: fs.root, Predictable: false}
+	_, err := namer.Name("52:54:00:12:34:01")
+	if err == nil || !strings.Contains(err.Error(), "net.ifnames=0") || !strings.Contains(err.Error(), "enp1s0") {
+		t.Fatalf("expected an error naming enp1s0 and net.ifnames=0, got %v", err)
+	}
+}
+
+func TestSysfsNamerSkipsVirtualLinksSharingTheMAC(t *testing.T) {
+	fs := newFakeSysfs(t)
+	// The bond and the VLAN have no device and sort before or after the NIC.
+	fs.addLink("bond0", "52:54:00:12:34:02", "")
+	fs.addLink("eth1", "52:54:00:12:34:02", "devices/pci0000:00/0000:00:04.0/virtio1")
+	fs.addLink("eth1.100", "52:54:00:12:34:02", "")
+
+	for _, predictable := range []bool{false, true} {
+		namer := &SysfsNamer{Root: fs.root, Predictable: predictable}
+		got, err := namer.Name("52:54:00:12:34:02")
+		if err != nil {
+			t.Fatalf("Name(predictable=%v) error: %v", predictable, err)
+		}
+		want := "eth1"
+		if predictable {
+			want = "enp0s4"
+		}
+		if got != want {
+			t.Fatalf("Name(predictable=%v) = %q, want %q", predictable, got, want)
+		}
 	}
 }
 
@@ -154,11 +189,6 @@ func TestSysfsNamerPredictable(t *testing.T) {
 		{
 			name:       "non pci device keeps kernel name",
 			devicePath: "devices/platform/soc/fe300000.ethernet",
-			want:       "eth0",
-		},
-		{
-			name:       "no device link keeps kernel name",
-			devicePath: "",
 			want:       "eth0",
 		},
 	}

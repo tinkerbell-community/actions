@@ -23,6 +23,7 @@ const (
 	routeUnicast   = "unicast"
 	protocolStatic = "static"
 	linkKindVLAN   = "vlan"
+	linkKindBond   = "bond"
 	linkTypeEther  = "ether"
 	vlanProtocol   = "802.1q"
 
@@ -54,22 +55,48 @@ type Address struct {
 	Layer    string `yaml:"layer"`
 }
 
-// Link mirrors the subset of network.LinkSpecSpec used here.
+// Link mirrors the subset of network.LinkSpecSpec used here. MasterName and
+// SlaveIndex are network.BondSlave, which Talos inlines into the link.
 type Link struct {
-	Name       string `yaml:"name"`
-	Logical    bool   `yaml:"logical,omitempty"`
-	Up         bool   `yaml:"up"`
-	Kind       string `yaml:"kind,omitempty"`
-	Type       string `yaml:"type,omitempty"`
-	ParentName string `yaml:"parentName,omitempty"`
-	VLAN       *VLAN  `yaml:"vlan,omitempty"`
-	Layer      string `yaml:"layer"`
+	Name       string      `yaml:"name"`
+	Logical    bool        `yaml:"logical,omitempty"`
+	Up         bool        `yaml:"up"`
+	Kind       string      `yaml:"kind,omitempty"`
+	Type       string      `yaml:"type,omitempty"`
+	ParentName string      `yaml:"parentName,omitempty"`
+	MasterName string      `yaml:"masterName,omitempty"`
+	SlaveIndex int         `yaml:"slaveIndex,omitempty"`
+	VLAN       *VLAN       `yaml:"vlan,omitempty"`
+	BondMaster *BondMaster `yaml:"bondMaster,omitempty"`
+	Layer      string      `yaml:"layer"`
 }
 
 // VLAN mirrors network.VLANSpec.
 type VLAN struct {
 	ID       uint16 `yaml:"vlanID"`
 	Protocol string `yaml:"vlanProtocol"`
+}
+
+// BondMaster mirrors the subset of network.BondMasterSpec used here. The enum
+// fields carry the names Talos' nethelpers types unmarshal from text, for
+// example mode "802.3ad" and xmitHashPolicy "layer3+4". Absent fields decode
+// to the zero value, which for every enum is the kernel default.
+type BondMaster struct {
+	Mode            string `yaml:"mode"`
+	XmitHashPolicy  string `yaml:"xmitHashPolicy,omitempty"`
+	LACPRate        string `yaml:"lacpRate,omitempty"`
+	MIIMon          uint32 `yaml:"miimon,omitempty"`
+	UpDelay         uint32 `yaml:"updelay,omitempty"`
+	DownDelay       uint32 `yaml:"downdelay,omitempty"`
+	ResendIGMP      uint32 `yaml:"resendIgmp,omitempty"`
+	LPInterval      uint32 `yaml:"lpInterval,omitempty"`
+	PacketsPerSlave uint32 `yaml:"packetsPerSlave,omitempty"`
+	NumPeerNotif    uint8  `yaml:"numPeerNotif,omitempty"`
+	TLBDynamicLB    uint8  `yaml:"tlbLogicalLb,omitempty"`
+	UseCarrier      bool   `yaml:"useCarrier,omitempty"`
+	ADActorSysPrio  uint16 `yaml:"adActorSysPrio,omitempty"`
+	ADLACPActive    string `yaml:"adLacpActive,omitempty"`
+	MissedMax       uint8  `yaml:"missedMax,omitempty"`
 }
 
 // Route mirrors network.RouteSpecSpec.
@@ -95,8 +122,9 @@ type Hostname struct {
 
 // Resolver mirrors network.ResolverSpecSpec.
 type Resolver struct {
-	DNSServers []string `yaml:"dnsServers"`
-	Layer      string   `yaml:"layer"`
+	DNSServers    []string `yaml:"dnsServers"`
+	SearchDomains []string `yaml:"searchDomains,omitempty"`
+	Layer         string   `yaml:"layer"`
 }
 
 // TimeServer mirrors network.TimeServerSpecSpec.
